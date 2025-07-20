@@ -35,7 +35,8 @@ const placeOrder = async (req, res) => {
         await newOrder.save();
         console.log("1. Order created in DB with MongoDB _id:", newOrder._id);
 
-        await userModel.findByIdAndUpdate(userId, { cartData: {} });
+        // We will clear the cart only AFTER successful payment verification
+        // await userModel.findByIdAndUpdate(userId, { cartData: {} }); // Moved this to verifyOrder success
 
         const options = {
             amount: req.body.amount * 100,
@@ -56,10 +57,11 @@ const placeOrder = async (req, res) => {
 
         res.json({
             success: true,
-            orderId: razorpayOrder.id,
+            orderId: razorpayOrder.id, // This is the Razorpay Order ID
             amount: razorpayOrder.amount,
             currency: razorpayOrder.currency,
-            key: process.env.RAZORPAY_KEY_ID
+            key: process.env.RAZORPAY_KEY_ID,
+            mongoOrderId: newOrder._id // Send MongoDB _id to frontend for potential deletion
         });
 
     } catch (error) {
@@ -72,15 +74,43 @@ const placeOrder = async (req, res) => {
     }
 };
 
+// @desc    Verify Razorpay payment (success or failure notification)
+// @route   POST /api/order/verify
+// @access  Private
 const verifyOrder = async (req, res) => {
-    const { orderId, razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
+    const { orderId, razorpay_payment_id, razorpay_order_id, razorpay_signature, success, mongoOrderId } = req.body; // Added 'success' and 'mongoOrderId'
 
     try {
-        const order = await orderModel.findOne({ 'paymentInfo.razorpayOrderId': orderId });
+        // Find the order using either Razorpay Order ID or MongoDB _id
+        let order;
+        if (mongoOrderId) {
+            order = await orderModel.findById(mongoOrderId); // Find by MongoDB ID if provided
+        } else if (orderId) {
+            order = await orderModel.findOne({ 'paymentInfo.razorpayOrderId': orderId }); // Fallback to Razorpay ID
+        }
 
         if (!order) {
-            console.log("Order not found in DB for Razorpay Order ID:", orderId);
+            console.log("Order not found in DB for verification (Razorpay ID:", orderId, "or Mongo ID:", mongoOrderId, ")");
             return res.json({ success: false, message: "Order not found or already processed." });
+        }
+
+        // --- CRITICAL: Handle direct failure notification vs. signature verification ---
+        if (success === false) { // This means frontend explicitly sent a failure notification
+            console.log("Received direct payment failure notification from frontend for order:", order._id);
+            // Delete the order from DB if payment failed/cancelled
+            await orderModel.findByIdAndDelete(order._id);
+            console.log("Order deleted due to payment failure.");
+            // No need to clear cart here, as it was not cleared on initial placeOrder
+            return res.json({ success: true, message: "Payment failure recorded, order deleted." });
+        }
+
+        // If 'success' is not false, proceed with signature verification (for successful payments)
+        if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+            console.log("Missing Razorpay signature details for verification for order:", order._id);
+            // Delete the order if details are incomplete for a successful verification attempt
+            await orderModel.findByIdAndDelete(order._id);
+            console.log("Order deleted due to incomplete verification details.");
+            return res.json({ success: false, message: "Missing payment details for verification, order deleted." });
         }
 
         const body = razorpay_order_id + "|" + razorpay_payment_id;
@@ -90,30 +120,25 @@ const verifyOrder = async (req, res) => {
             .digest('hex');
 
         if (expectedSignature === razorpay_signature) {
-            console.log("SIGNATURE MATCHED! Updating payment info.");
+            console.log("SIGNATURE MATCHED! Updating payment info for order:", order._id);
             order.paymentInfo.razorpayPaymentId = razorpay_payment_id;
             order.paymentInfo.razorpaySignature = razorpay_signature;
-            order.paymentInfo.status = "completed"; // Payment info status is completed
-            order.payment = true; // Overall payment status is true
-
-            // CRITICAL CHANGE: REMOVE order.status = "confirmed";
-            // The order status should remain "Food Processing" from initial creation
-            // unless verification fails.
-            // order.status = "confirmed"; // <--- REMOVE THIS LINE
+            order.paymentInfo.status = "completed";
+            order.payment = true;
+            order.status = "Food Processing"; // Ensure status remains "Food Processing"
 
             await order.save();
+
+            // Clear the cart ONLY after successful payment and verification
+            await userModel.findByIdAndUpdate(order.userId, { cartData: {} }); // Now clearing cart here
 
             res.json({ success: true, message: "Payment Verified and Order Placed" });
         } else {
-            console.log("SIGNATURE MISMATCH! Updating order status to failed.");
-            console.log("Expected:", expectedSignature);
-            console.log("Received:", razorpay_signature);
-            order.paymentInfo.status = "failed";
-            order.status = "failed"; // Set overall status to failed if verification fails
-            order.payment = false;
-            await order.save();
-
-            res.json({ success: false, message: "Payment Verification Failed" });
+            console.log("SIGNATURE MISMATCH! Deleting order due to failed verification for order:", order._id);
+            // Delete the order if signature verification fails
+            await orderModel.findByIdAndDelete(order._id);
+            console.log("Order deleted due to signature mismatch.");
+            return res.json({ success: false, message: "Payment Verification Failed, order deleted." });
         }
     } catch (error) {
         console.error('Error verifying Razorpay payment:', error);
@@ -138,7 +163,6 @@ const getUserOrders = async (req, res) => {
     }
 };
 
-//listing orders for admin Panel,this api not working
 const listOrders = async (req,res) =>{
     try {
         const orders = await orderModel.find({});
@@ -146,12 +170,9 @@ const listOrders = async (req,res) =>{
     } catch (error) {
         console.log(error);
         res.json({success:false,message:"Error"})
-        
     }
-
 }
 
-//api for updating order status
 const updateStatus = async (req,res) =>{
     try {
         await orderModel.findByIdAndUpdate(req.body.orderId,{status:req.body.status})
@@ -159,7 +180,6 @@ const updateStatus = async (req,res) =>{
     } catch (error) {
         console.log(error);
         res.json({success:false,message:"Error"})
-        
     }
 }
 
