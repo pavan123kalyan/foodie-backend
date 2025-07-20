@@ -1,5 +1,5 @@
-//models for mongodb database
-//controllers --> logic for backend
+// models for mongodb database
+// controllers --> logic for backend
 
 import express from "express";
 import cors from "cors";
@@ -9,6 +9,8 @@ import 'dotenv/config.js'
 import userRouter from "./routes/userRoute.js";
 import cartRouter from "./routes/cartRoute.js";
 import orderRouter from "./routes/orderRoute.js";
+import adminRouter from "./routes/adminRoute.js"; // <--- NEW: Import adminRouter
+
 //app config
 const app=express()
 const port=4000
@@ -31,17 +33,14 @@ app.use("/api/cart",cartRouter)
 
 app.use("/api/order",orderRouter)
 
-
+app.use("/api/admin", adminRouter); // <--- NEW: Mount adminRouter
 
 
 app.get("/",(req,res)=>{
     res.send("API WORKING")
 })
 
- app.listen(port,()=>{    //to run exress server
+app.listen(port,()=>{
     console.log(`server started on http://localhost:${port}`);
-    
- })
-                 
- //mongodb+srv://paidipellipavan:S7lIcB7LrlP13o4A@cluster0.2h9pi0k.mongodb.net/?
- 
+
+})

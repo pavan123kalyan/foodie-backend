@@ -5,8 +5,6 @@ import userModel from "../models/userModel.js";
 import razorpay from '../config/razorpay.js';
 import crypto from 'crypto';
 
-const frontend_url = "http://localhost:5174";
-
 const placeOrder = async (req, res) => {
     try {
         const userId = req.user._id;
